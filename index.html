@@ -1,0 +1,290 @@
+
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8" />
+  <title>Selectare Hartă + Zoom Mare</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: 'Segoe UI', sans-serif; }
+    #map { height: 100vh; }
+
+    .round-button {
+      position: absolute;
+      left: 10px;
+      z-index: 1001;
+      width: 45px;
+      height: 45px;
+      background-color: #2d2d2d;
+      color: white;
+      font-size: 20px;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+
+    .search-btn { top: 70px; }
+    .layer-btn { top: 125px; }
+    .basemap-btn { top: 180px; }
+
+    .popup-panel {
+      position: absolute;
+      left: 65px;
+      z-index: 1001;
+      background: white;
+      border-radius: 10px;
+      padding: 15px;
+      width: 250px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+      display: none;
+    }
+
+    .search-popup { top: 70px; }
+    .layer-popup { top: 125px; }
+    .basemap-popup { top: 180px; }
+
+    .popup-section { margin-bottom: 10px; }
+    .zone-label {
+      font-size: 13px;
+      font-weight: bold;
+      color: #222;
+      background: rgba(255,255,255,0.6);
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .basemap-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+    .basemap-option img {
+      width: 80px;
+      height: 60px;
+      object-fit: cover;
+      border: 1px solid #aaa;
+      border-radius: 4px;
+    }
+    .basemap-option span {
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<button class="round-button search-btn" onclick="toggleOnly('searchBox')">🔍</button>
+<button class="round-button layer-btn" onclick="toggleOnly('layerBox')">🗂️</button>
+<button class="round-button basemap-btn" onclick="toggleOnly('basemapBox')">🗺️</button>
+
+<div class="popup-panel search-popup" id="searchBox">
+  <h3 style="font-size: 16px;">🔎 Caută după cod</h3>
+  <input type="text" id="searchInput" placeholder="Ex: E101" />
+  <button onclick="searchTree()">Caută</button>
+</div>
+
+<div class="popup-panel layer-popup" id="layerBox">
+  <div class="popup-section">
+    <label><input type="checkbox" id="toggleZone" onchange="toggleZoneLayer()"> Zone de interes</label>
+  </div>
+  <div class="popup-section">
+    <label for="opacitySlider">Transparență:</label>
+    <input type="range" id="opacitySlider" min="0" max="1" step="0.05" value="0.5" onchange="updateZoneOpacity()" />
+  </div>
+</div>
+
+<div class="popup-panel basemap-popup" id="basemapBox">
+  <div class="basemap-option" onclick="switchBase('osm')">
+    <img src="https://a.tile.openstreetmap.org/17/70342/46487.png"><span>Harta standard</span>
+  </div>
+  <div class="basemap-option" onclick="switchBase('sat')">
+    <img src="https://mt1.google.com/vt/lyrs=s&x=70342&y=46487&z=17"><span>Imagini satelitare</span>
+  </div>
+  <div class="basemap-option" onclick="switchBase('carto')">
+    <img src="https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/17/70342/46487.png"><span>Străzi</span>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js">
+function specieToColor(name) {
+  const palette = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % palette.length;
+  return palette[index];
+}
+</script>
+
+<script>
+  const map = L.map('map', { maxZoom: 21 }).setView([47.342986, 25.355702], 18);
+
+  const baseOSM = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
+  const baseSat = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { attribution: 'Google' });
+  const baseCarto = L.tileLayer('https://cartodb-basemaps-a.global.ssl.fastly.net/light_all/{z}/{x}/{y}.png');
+
+  baseOSM.addTo(map);
+  let currentBase = baseOSM;
+
+  function switchBase(type) {
+    map.removeLayer(currentBase);
+    if (type === 'osm') currentBase = baseOSM;
+    if (type === 'sat') currentBase = baseSat;
+    if (type === 'carto') currentBase = baseCarto;
+    currentBase.addTo(map);
+  }
+
+  let arboreLayer, zoneLayer = null, labelMarkers = [];
+
+  fetch('ARBORI.geojson')
+    .then(res => res.json())
+    .then(data => {
+      arboreLayer = L.geoJSON(data, {
+          pointToLayer: function (feature, latlng) {
+            const specie = feature.properties["Fișă Arbori — Fișă_Arbori_Denumire specie"] || "";
+            const color = specieToColor(specie);
+            const markerHtml = `<div style='background-color:${color};width:14px;height:14px;border-radius:50%;border:1.5px solid white;'></div>`;
+            return L.marker(latlng, {
+              icon: L.divIcon({
+                html: markerHtml,
+                className: '',
+                iconSize: [14, 14],
+                popupAnchor: [0, -6]
+              })
+            });
+          },
+        onEachFeature: function (feature, layer) {
+          const p = feature.properties;
+          const cod = p.COD || "–";
+          const specie = p["Fișă Arbori — Fișă_Arbori_Denumire specie"] || "–";
+          const populara = p["Fișă Arbori — Fișă_Arbori_Denumire populară"] || "–";
+          const diametru = p["Fișă Arbori — Fișă_Arbori_Diametru trunchi"] || "–";
+          const zona = p["Fișă Arbori — Fișă_Arbori_Zona"] || "–";
+          const vigoare = p["Sănătatea arborelui și probilul speciei — Sănătatea_arborelui_și_probilul_Vigoare"] || "–";
+          const risc = p["Evaluare Risc — Evaluare_Risc_Grad maxim de risc"] || "–";
+          const popup = `
+            <div class="popup-box">
+              <img class="popup-img" src="images/${cod}.jpg" onerror="this.style.display='none'" style="width: 120px; height: 120px; object-fit: cover;" />
+              <div style="font-size: 13px;">
+                <strong>Cod:</strong> ${cod}<br>
+                <strong>Specie:</strong> ${specie}<br>
+                <strong>Populară:</strong> ${populara}<br>
+                <strong>Diametru:</strong> ${diametru} cm<br>
+                <strong>Zona:</strong> ${zona}<br>
+                <strong>Vigoare:</strong> ${vigoare}<br>
+                <strong>Risc:</strong> ${risc}
+              </div>
+            </div>`;
+          layer.bindPopup(popup);
+        }
+      }).addTo(map);
+    });
+
+  function toggleOnly(id) {
+    ['searchBox', 'layerBox', 'basemapBox'].forEach(box => {
+      document.getElementById(box).style.display = (box === id && document.getElementById(box).style.display === 'none') ? 'block' : 'none';
+    });
+  }
+
+  function searchTree() {
+    const val = document.getElementById('searchInput').value.trim().toLowerCase();
+    if (!val || !arboreLayer) return;
+    let found = false;
+    arboreLayer.eachLayer(layer => {
+      const p = layer.feature.properties;
+      const cod = (p.COD || "").toLowerCase();
+      const specie = (p["Fișă Arbori — Fișă_Arbori_Denumire specie"] || "").toLowerCase();
+      const populara = (p["Fișă Arbori — Fișă_Arbori_Denumire populară"] || "").toLowerCase();
+      if (cod.includes(val) || specie.includes(val) || populara.includes(val)) {
+        map.setView(layer.getLatLng(), 20);
+        layer.openPopup();
+        found = true;
+      }
+    });
+    if (!found) alert("Arbore negăsit.");
+  }
+
+  function toggleZoneLayer() {
+    const checked = document.getElementById('toggleZone').checked;
+    if (checked) {
+      if (!zoneLayer) {
+        fetch('ZONE_INTERES.geojson')
+          .then(r => r.json())
+          .then(data => {
+            zoneLayer = L.geoJSON(data, {
+          pointToLayer: function (feature, latlng) {
+            const specie = feature.properties["Fișă Arbori — Fișă_Arbori_Denumire specie"] || "";
+            const color = specieToColor(specie);
+            const markerHtml = `<div style='background-color:${color};width:14px;height:14px;border-radius:50%;border:1.5px solid white;'></div>`;
+            return L.marker(latlng, {
+              icon: L.divIcon({
+                html: markerHtml,
+                className: '',
+                iconSize: [14, 14],
+                popupAnchor: [0, -6]
+              })
+            });
+          },
+              style: () => ({
+                color: getRandomColor(),
+                weight: 2,
+                fillOpacity: parseFloat(document.getElementById("opacitySlider").value)
+              }),
+              onEachFeature: (f, l) => {
+                const zona = f.properties.Numar_Zona || "–";
+                const center = l.getBounds().getCenter();
+                const label = L.divIcon({
+                  className: 'zone-label',
+                  html: `Zona ${zona}`,
+                  iconSize: [60, 20],
+                  iconAnchor: [30, 10]
+                });
+                const marker = L.marker(center, { icon: label, interactive: false }).addTo(map);
+                labelMarkers.push(marker);
+              }
+            }).addTo(map);
+          });
+      } else {
+        map.addLayer(zoneLayer);
+        labelMarkers.forEach(m => map.addLayer(m));
+      }
+    } else {
+      if (zoneLayer) map.removeLayer(zoneLayer);
+      labelMarkers.forEach(m => map.removeLayer(m));
+    }
+  }
+
+  function updateZoneOpacity() {
+    if (zoneLayer) {
+      zoneLayer.setStyle({ fillOpacity: parseFloat(document.getElementById("opacitySlider").value) });
+    }
+  }
+
+  function getRandomColor() {
+    return "#" + Math.floor(Math.random()*16777215).toString(16);
+  }
+
+function specieToColor(name) {
+  const palette = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+  ];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % palette.length;
+  return palette[index];
+}
+</script>
+
+</body>
+</html>
